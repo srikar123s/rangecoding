@@ -1,7 +1,6 @@
-
 import streamlit as st
 import numpy as np
-import io, os, struct, time, pandas as pd, warnings, contextlib, sys, tempfile, shutil
+import io, os, struct, time, pandas as pd, warnings, contextlib, sys, tempfile, shutil, bisect
 from PIL import Image
 from bitarray import bitarray
 from collections import Counter
@@ -14,9 +13,24 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
+MAX_UPLOAD_PIXELS = 2_000_000
+
 # ---------------------------
 # Helpers
 # ---------------------------
+
+def prepare_image_for_processing(file_bytes, file_name):
+    """Resize very large images to keep compression feasible on Streamlit Cloud."""
+    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    width, height = img.size
+    if width * height > MAX_UPLOAD_PIXELS:
+        scale = (MAX_UPLOAD_PIXELS / (width * height)) ** 0.5
+        new_width = max(1, int(width * scale))
+        new_height = max(1, int(height * scale))
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        return np.array(img), True
+    return np.array(img), False
+
 @contextlib.contextmanager
 def suppress_output():
     """Temporarily silence stdout/stderr (used during heavy loops)."""
@@ -142,56 +156,126 @@ def ycocg_to_rgb_uint8(ycocg):
 # ---------------------------
 # Channel compress/decompress (contextual)
 def compress_channel_contextual(img_channel, num_contexts=4, offset=2048):
+    """
+    Compress one channel.
+
+    Performance optimization:
+    - Build a symbol -> index dictionary once per context.
+    - Avoid list.index() inside the per-pixel loop.
+    - Avoid side-effect list comprehensions that Streamlit may render.
+    """
     h, w = img_channel.shape
     ctx_res = [[] for _ in range(num_contexts)]
+
+    # Pass 1: prediction, residual and context collection.
     for y in range(h):
         for x in range(w):
-            pred = predict_pixel_weighted(x,y,img_channel)
-            res = int(img_channel[y,x]) - pred
-            ctx_res[context_for_pixel(x,y,img_channel)].append(res + offset)
+            pred = predict_pixel_weighted(x, y, img_channel)
+            res = int(img_channel[y, x]) - pred
+            ctx = context_for_pixel(x, y, img_channel)
+            ctx_res[ctx].append(res + offset)
+
+    # Build frequency tables and cumulative counts.
     ctx_symbols, ctx_counts = [], []
+    ctx_cum, ctx_totals = [], []
+    ctx_index = []
+
     for lst in ctx_res:
         freq = Counter(lst)
         symbols = sorted(freq.keys())
         counts = [freq[s] for s in symbols]
-        ctx_symbols.append(symbols); ctx_counts.append(counts)
-    ctx_cum, ctx_totals = [], []
-    for counts in ctx_counts:
+
         cum = [0]
         for c in counts:
             cum.append(cum[-1] + c)
-        ctx_cum.append(cum); ctx_totals.append(cum[-1])
+
+        ctx_symbols.append(symbols)
+        ctx_counts.append(counts)
+        ctx_cum.append(cum)
+        ctx_totals.append(cum[-1])
+
+        # O(1) average lookup instead of list.index().
+        ctx_index.append({s: i for i, s in enumerate(symbols)})
+
     enc = RangeEncoder()
+
+    # Pass 2: encode residuals.
     for y in range(h):
         for x in range(w):
-            pred = predict_pixel_weighted(x,y,img_channel)
-            res = int(img_channel[y,x]) - pred
+            pred = predict_pixel_weighted(x, y, img_channel)
+            res = int(img_channel[y, x]) - pred
             s = res + offset
-            ctx = context_for_pixel(x,y,img_channel)
-            idx = ctx_symbols[ctx].index(s)
+            ctx = context_for_pixel(x, y, img_channel)
+            idx = ctx_index[ctx][s]
             enc.encode(idx, ctx_cum[ctx], ctx_totals[ctx])
+
     enc.finish()
     return enc.to_bytes(), ctx_symbols, ctx_counts, offset, h, w
 
 def decompress_channel_contextual(data, ctx_symbols, ctx_counts, offset, h, w):
+    """
+    Decompress one channel.
+
+    Performance optimization:
+    - Use bisect_right on cumulative frequencies instead of
+      scanning the cumulative list from index 0 for every pixel.
+    """
     ctx_cum, ctx_totals = [], []
+
     for counts in ctx_counts:
         cum = [0]
         for c in counts:
             cum.append(cum[-1] + c)
-        ctx_cum.append(cum); ctx_totals.append(cum[-1])
+        ctx_cum.append(cum)
+        ctx_totals.append(cum[-1])
+
     dec = RangeDecoder(data)
-    img = np.zeros((h,w), dtype=np.int32)
+    img = np.zeros((h, w), dtype=np.int32)
+
     for y in range(h):
         for x in range(w):
-            ctx = context_for_pixel(x,y,img)
+            ctx = context_for_pixel(x, y, img)
+
             if ctx_totals[ctx] == 0:
                 val = 0
             else:
-                idx = dec.decode(ctx_cum[ctx], ctx_totals[ctx])
+                # Decode the cumulative-frequency position directly.
+                rng = dec.high - dec.low + 1
+                val_target = ((dec.code - dec.low + 1) * ctx_totals[ctx] - 1) // rng
+
+                # Find symbol index in O(log n), rather than O(n).
+                idx = bisect.bisect_right(ctx_cum[ctx], val_target) - 1
+
+                # Apply the same range-decoder state update as RangeDecoder.decode().
+                cum = ctx_cum[ctx]
+                total = ctx_totals[ctx]
+
+                dec.high = dec.low + (rng * cum[idx + 1]) // total - 1
+                dec.low = dec.low + (rng * cum[idx]) // total
+
+                while True:
+                    if dec.high < HALF:
+                        pass
+                    elif dec.low >= HALF:
+                        dec.code -= HALF
+                        dec.low -= HALF
+                        dec.high -= HALF
+                    elif dec.low >= QUARTER and dec.high < THREE_QUARTER:
+                        dec.code -= QUARTER
+                        dec.low -= QUARTER
+                        dec.high -= QUARTER
+                    else:
+                        break
+
+                    dec.low <<= 1
+                    dec.high = (dec.high << 1) | 1
+                    dec.code = (dec.code << 1) | dec._bit()
+
                 val = ctx_symbols[ctx][idx] - offset
-            pred = predict_pixel_weighted(x,y,img)
-            img[y,x] = int(np.clip(pred + val, 0, 65535))
+
+            pred = predict_pixel_weighted(x, y, img)
+            img[y, x] = int(np.clip(pred + val, 0, 65535))
+
     return img
 
 # ---------------------------
@@ -216,7 +300,9 @@ def process_images(files):
             file_name = f.name
             file_bytes = f.getvalue()
             base, ext = os.path.splitext(os.path.basename(file_name))
-            img = np.array(Image.open(io.BytesIO(file_bytes)).convert("RGB"))
+            img, resized = prepare_image_for_processing(file_bytes, file_name)
+            if resized:
+                st.info(f"{file_name} was resized to keep processing practical on Streamlit Cloud.")
             h, w = img.shape[:2]
             orig_kb = len(file_bytes) / 1024.0
 
@@ -225,7 +311,10 @@ def process_images(files):
 
             with suppress_output():
                 t0 = time.time()
-                channels = [compress_channel_contextual(proc[...,i].astype(np.int32)) for i in range(3)]
+                channels = [
+                    compress_channel_contextual(proc[..., i].astype(np.int32))
+                    for i in range(3)
+                ]
                 comp_time = time.time() - t0
 
             # write binary container
