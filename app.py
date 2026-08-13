@@ -510,7 +510,7 @@ if uploaded_files:
     extra = f" + {len(uploaded_files) - 5} more" if len(uploaded_files) > 5 else ""
     st.info(f"Selected {len(uploaded_files)} image(s): {names}{extra}")
 
-if st.button("🚀 Start Compression", type="primary", use_container_width=True):
+if st.button("🚀 Start Compression", type="primary", width="stretch"):
     if not uploaded_files:
         st.warning("Please upload at least one image.")
     else:
@@ -588,13 +588,13 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                     st.image(
                         item["original_bytes"],
                         caption=f"Original — {item['image']}",
-                        use_container_width=True
+                        width="stretch"
                     )
                 with col2:
                     st.image(
                         item["rec_png_bytes"],
                         caption="Reconstructed — lossless output",
-                        use_container_width=True
+                        width="stretch"
                     )
 
                 with st.expander("Processing Details"):
@@ -614,7 +614,7 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                         data=item["bin_bytes"],
                         file_name=item["bin_name"],
                         mime="application/octet-stream",
-                        use_container_width=True
+                        width="stretch"
                     )
                 with d2:
                     st.download_button(
@@ -622,7 +622,7 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                         data=item["rec_png_bytes"],
                         file_name=item["rec_png_name"],
                         mime="image/png",
-                        use_container_width=True
+                        width="stretch"
                     )
 
             else:
@@ -633,7 +633,7 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                         "Compressed (KB)", "CR (CAP-RC++)",
                         "PSNR (CAP-RC++)", "CompTime", "DecompTime"
                     ]],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
 
@@ -664,10 +664,10 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                         img1, img2 = st.columns(2)
                         with img1:
                             st.image(item["original_bytes"], caption="Original",
-                                     use_container_width=True)
+                                     width="stretch")
                         with img2:
                             st.image(item["rec_png_bytes"], caption="Reconstructed",
-                                     use_container_width=True)
+                                     width="stretch")
 
                         dl1, dl2 = st.columns(2)
                         with dl1:
@@ -692,7 +692,7 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                     data=results["csv_bytes"],
                     file_name="CAPRCppp_Results.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
 
                 st.download_button(
@@ -700,7 +700,7 @@ if st.button("🚀 Start Compression", type="primary", use_container_width=True)
                     data=results["zip_bytes"],
                     file_name="CAPRCppp_all.zip",
                     mime="application/zip",
-                    use_container_width=True
+                    width="stretch"
                 )
 
 st.markdown("---")
