@@ -1,5 +1,3 @@
-# streamlit_app.py
-# CAP-RC+++ Streamlit app: multi-file, per-image downloads, clean UI
 
 import streamlit as st
 import numpy as np
@@ -7,6 +5,9 @@ import io, os, struct, time, pandas as pd, warnings, contextlib, sys, tempfile, 
 from PIL import Image
 from bitarray import bitarray
 from collections import Counter
+
+# Streamlit magic output is avoided: intermediate arrays/matrices are never
+# left as standalone expressions; only final user-facing results are rendered.
 import matplotlib.pyplot as plt
 
 # note: JPEG-LS comparison removed from this build
@@ -156,7 +157,9 @@ def compress_channel_contextual(img_channel, num_contexts=4, offset=2048):
         ctx_symbols.append(symbols); ctx_counts.append(counts)
     ctx_cum, ctx_totals = [], []
     for counts in ctx_counts:
-        cum = [0]; [cum.append(cum[-1] + c) for c in counts]
+        cum = [0]
+        for c in counts:
+            cum.append(cum[-1] + c)
         ctx_cum.append(cum); ctx_totals.append(cum[-1])
     enc = RangeEncoder()
     for y in range(h):
@@ -173,7 +176,9 @@ def compress_channel_contextual(img_channel, num_contexts=4, offset=2048):
 def decompress_channel_contextual(data, ctx_symbols, ctx_counts, offset, h, w):
     ctx_cum, ctx_totals = [], []
     for counts in ctx_counts:
-        cum = [0]; [cum.append(cum[-1] + c) for c in counts]
+        cum = [0]
+        for c in counts:
+            cum.append(cum[-1] + c)
         ctx_cum.append(cum); ctx_totals.append(cum[-1])
     dec = RangeDecoder(data)
     img = np.zeros((h,w), dtype=np.int32)
@@ -273,10 +278,14 @@ def process_images(files):
 
             # visuals
             fig, ax = plt.subplots(1,3, figsize=(14,5))
-            ax[0].imshow(img); ax[0].set_title("Original")
-            ax[1].imshow(rec_rgb); ax[1].set_title("Reconstructed")
-            ax[2].imshow(residual, cmap="inferno"); ax[2].set_title("Residual Map")
-            for a in ax: a.axis("off")
+            _im0 = ax[0].imshow(img)
+            ax[0].set_title("Original")
+            _im1 = ax[1].imshow(rec_rgb)
+            ax[1].set_title("Reconstructed")
+            _im2 = ax[2].imshow(residual, cmap="inferno")
+            ax[2].set_title("Residual Map")
+            for a in ax:
+                _axis_result = a.axis("off")
             fig.suptitle(f"{base}{ext} | CR={cr:.2f}× | PSNR={psnr:.2f} dB")
             visuals.append({
                 "name": f"{base}_comparison.png",
@@ -337,14 +346,18 @@ def process_images(files):
         ax.bar(df["Image"], cr_col)
         ax.set_ylabel("Compression Ratio (×)")
         ax.set_title("Compression Ratio (CAP-RC+++)")
-        cp = os.path.join(temp_dir, "CR_chart.png"); fig.savefig(cp, bbox_inches="tight"); plt.close(fig)
+        cp = os.path.join(temp_dir, "CR_chart.png")
+        fig.savefig(cp, bbox_inches="tight")
+        plt.close(fig)
         charts.append(cp)
         # PSNR chart
         fig, ax = plt.subplots(figsize=(7,4))
         ax.bar(df["Image"], psnr_col)
         ax.set_ylabel("PSNR (dB)")
         ax.set_title("PSNR (CAP-RC++)")
-        pp = os.path.join(temp_dir, "PSNR_chart.png"); fig.savefig(pp, bbox_inches="tight"); plt.close(fig)
+        pp = os.path.join(temp_dir, "PSNR_chart.png")
+        fig.savefig(pp, bbox_inches="tight")
+        plt.close(fig)
         charts.append(pp)
 
         # JPEG-LS comparison charts removed
@@ -362,8 +375,18 @@ def process_images(files):
             rec_png_bytes = f_png.read()
         with open(bin_path, "rb") as f_bin:
             bin_bytes = f_bin.read()
+        # Keep only user-facing download/display data in the returned result.
+        # The raw compression matrices/symbol lists are never sent to Streamlit.
+        original_name = p["Image"]
+        original_bytes = None
+        for original_file in files:
+            if getattr(original_file, "name", "") == original_name:
+                original_bytes = original_file.getvalue()
+                break
+
         per_items.append({
-            "image": p["Image"],
+            "image": original_name,
+            "original_bytes": original_bytes,
             "rec_png_name": os.path.basename(rec_path),
             "rec_png_bytes": rec_png_bytes,
             "bin_name": os.path.basename(bin_path),
@@ -393,17 +416,101 @@ def process_images(files):
 # ---------------------------
 # Streamlit UI
 # ---------------------------
-st.set_page_config(page_title="CAP-RC+++", layout="wide")
-st.title("CAP-RC+++: Context-Adaptive Lossless Image Compression")
-st.write("Upload one or more lossless images (BMP/TIFF). The app provides a summary table, visuals, and per-image downloads.")
+st.set_page_config(
+    page_title="CAP-RC+++ | Lossless Image Compression",
+    page_icon="🗜️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Clean, application-style CSS. No compression matrices or debug output are
+# rendered anywhere in the UI.
+st.markdown("""
+<style>
+    .block-container {
+        max-width: 1200px;
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+    }
+
+    .hero {
+        padding: 1.5rem 0 1rem 0;
+    }
+
+    .hero h1 {
+        margin-bottom: 0.25rem;
+        font-size: 2.2rem;
+    }
+
+    .hero p {
+        color: #9aa4b2;
+        font-size: 1rem;
+        margin-top: 0;
+    }
+
+    .metric-card {
+        border: 1px solid rgba(128,128,128,.25);
+        border-radius: 12px;
+        padding: 1rem;
+        min-height: 105px;
+        background: rgba(128,128,128,.05);
+    }
+
+    .metric-label {
+        color: #9aa4b2;
+        font-size: .85rem;
+        margin-bottom: .35rem;
+    }
+
+    .metric-value {
+        font-size: 1.45rem;
+        font-weight: 700;
+    }
+
+    .success-box {
+        border: 1px solid #35b37e;
+        border-radius: 10px;
+        padding: .8rem 1rem;
+        margin: .75rem 0 1rem 0;
+        background: rgba(53,179,126,.08);
+    }
+
+    .section-title {
+        margin-top: 1.4rem;
+        margin-bottom: .8rem;
+    }
+
+    div[data-testid="stFileUploader"] {
+        border-radius: 12px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="hero">
+    <h1>🗜️ CAP-RC+++</h1>
+    <p>Context-Adaptive Lossless Image Compression</p>
+</div>
+""", unsafe_allow_html=True)
+
+st.caption(
+    "Upload BMP, TIFF, or PNG images. Compress them, verify exact reconstruction, "
+    "compare sizes, and download the compressed output."
+)
 
 uploaded_files = st.file_uploader(
     "Upload Images",
     type=["bmp", "tif", "tiff", "png"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="You can upload one or more lossless images."
 )
 
-if st.button("Start Compression", type="primary"):
+if uploaded_files:
+    names = ", ".join(f.name for f in uploaded_files[:5])
+    extra = f" + {len(uploaded_files) - 5} more" if len(uploaded_files) > 5 else ""
+    st.info(f"Selected {len(uploaded_files)} image(s): {names}{extra}")
+
+if st.button("🚀 Start Compression", type="primary", use_container_width=True):
     if not uploaded_files:
         st.warning("Please upload at least one image.")
     else:
@@ -411,61 +518,193 @@ if st.button("Start Compression", type="primary"):
             results = process_images(uploaded_files)
 
         df = results["df"]
-        st.subheader("Summary Table")
-        st.dataframe(df, use_container_width=True)
 
-        st.download_button(
-            "Download CSV Summary",
-            data=results["csv_bytes"],
-            file_name="CAPRCppp_Results.csv",
-            mime="text/csv"
-        )
-        st.download_button(
-            "Download ZIP (All Files)",
-            data=results["zip_bytes"],
-            file_name="CAPRCppp_all.zip",
-            mime="application/zip"
-        )
+        if df.empty:
+            st.error("No images could be processed.")
+        else:
+            st.success(
+                f"Compression completed successfully for {len(df)} image(s)."
+            )
 
-        if results["visuals"]:
-            st.subheader("Visual Comparison")
-            for visual in results["visuals"]:
-                st.download_button(
-                    "Download comparison image",
-                    data=visual["bytes"],
-                    file_name=visual["name"],
-                    mime="image/png",
-                    key=f"visual_{visual['name']}"
+            # Overall summary
+            st.markdown('<div class="section-title"><h2>Compression Results</h2></div>',
+                        unsafe_allow_html=True)
+
+            if len(df) == 1:
+                row = df.iloc[0]
+
+                def metric(label, value):
+                    return f"""
+                    <div class="metric-card">
+                        <div class="metric-label">{label}</div>
+                        <div class="metric-value">{value}</div>
+                    </div>
+                    """
+
+                # Extract numeric values from the formatted result row.
+                original_kb = float(row["Original (KB)"])
+                compressed_kb = float(row["Compressed (KB)"])
+                ratio = float(row["CR (CAP-RC++)"])
+                psnr_text = str(row["PSNR (CAP-RC++)"])
+                compression_time = str(row["CompTime"])
+                decompression_time = str(row["DecompTime"])
+
+                if original_kb > 0:
+                    saved_pct = max(0.0, (1 - compressed_kb / original_kb) * 100)
+                else:
+                    saved_pct = 0.0
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.markdown(metric("Original Size", f"{original_kb:.2f} KB"),
+                                unsafe_allow_html=True)
+                with c2:
+                    st.markdown(metric("Compressed Size", f"{compressed_kb:.2f} KB"),
+                                unsafe_allow_html=True)
+                with c3:
+                    st.markdown(metric("Compression Ratio", f"{ratio:.2f}×"),
+                                unsafe_allow_html=True)
+                with c4:
+                    st.markdown(metric("Space Saved", f"{saved_pct:.2f}%"),
+                                unsafe_allow_html=True)
+
+                if psnr_text.startswith("inf"):
+                    verification = "PASS — Exact lossless reconstruction"
+                else:
+                    verification = f"Check reconstruction (PSNR: {psnr_text})"
+
+                st.markdown(
+                    f'<div class="success-box">✅ <b>Lossless Verification:</b> {verification}</div>',
+                    unsafe_allow_html=True
                 )
 
-        st.subheader("Per-Image Downloads")
-        for idx, item in enumerate(results["per_items"], start=1):
-            with st.expander(item["image"], expanded=False):
+                # Image comparison
+                item = results["per_items"][0]
+                st.markdown('<div class="section-title"><h2>Image Comparison</h2></div>',
+                            unsafe_allow_html=True)
+
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.download_button(
-                        "Download Reconstructed PNG",
-                        data=item["rec_png_bytes"],
-                        file_name=item["rec_png_name"],
-                        mime="image/png",
-                        key=f"png_{idx}_{item['rec_png_name']}"
+                    st.image(
+                        item["original_bytes"],
+                        caption=f"Original — {item['image']}",
+                        use_container_width=True
                     )
                 with col2:
+                    st.image(
+                        item["rec_png_bytes"],
+                        caption="Reconstructed — lossless output",
+                        use_container_width=True
+                    )
+
+                with st.expander("Processing Details"):
+                    d1, d2 = st.columns(2)
+                    d1.write(f"**Resolution:** {row['Resolution']}")
+                    d1.write(f"**Compression time:** {compression_time}")
+                    d2.write(f"**Decompression time:** {decompression_time}")
+                    d2.write(f"**PSNR:** {psnr_text}")
+
+                st.markdown('<div class="section-title"><h2>Downloads</h2></div>',
+                            unsafe_allow_html=True)
+
+                d1, d2 = st.columns(2)
+                with d1:
                     st.download_button(
-                        "Download Compressed BIN",
+                        "⬇️ Download Compressed File",
                         data=item["bin_bytes"],
                         file_name=item["bin_name"],
                         mime="application/octet-stream",
-                        key=f"bin_{idx}_{item['bin_name']}"
+                        use_container_width=True
+                    )
+                with d2:
+                    st.download_button(
+                        "⬇️ Download Reconstructed PNG",
+                        data=item["rec_png_bytes"],
+                        file_name=item["rec_png_name"],
+                        mime="image/png",
+                        use_container_width=True
                     )
 
-        if results["charts"]:
-            st.subheader("Charts")
-            for chart in results["charts"]:
-                st.download_button(
-                    f"Download {chart['name']}",
-                    data=chart["bytes"],
-                    file_name=chart["name"],
-                    mime="image/png",
-                    key=f"chart_{chart['name']}"
+            else:
+                # Multi-image mode: show a compact summary, not raw arrays.
+                st.dataframe(
+                    df[[
+                        "Image", "Resolution", "Original (KB)",
+                        "Compressed (KB)", "CR (CAP-RC++)",
+                        "PSNR (CAP-RC++)", "CompTime", "DecompTime"
+                    ]],
+                    use_container_width=True,
+                    hide_index=True
                 )
+
+                st.markdown('<div class="section-title"><h2>Image Results</h2></div>',
+                            unsafe_allow_html=True)
+
+                for idx, (row, item) in enumerate(
+                    zip(df.to_dict("records"), results["per_items"])
+                ):
+                    with st.expander(f"🖼️ {row['Image']}", expanded=(idx == 0)):
+                        original_kb = float(row["Original (KB)"])
+                        compressed_kb = float(row["Compressed (KB)"])
+                        ratio = float(row["CR (CAP-RC++)"])
+                        saved_pct = max(
+                            0.0,
+                            (1 - compressed_kb / original_kb) * 100
+                        ) if original_kb else 0.0
+
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Original", f"{original_kb:.2f} KB")
+                        m2.metric("Compressed", f"{compressed_kb:.2f} KB")
+                        m3.metric("Ratio", f"{ratio:.2f}×")
+                        m4.metric("Space Saved", f"{saved_pct:.2f}%")
+
+                        if str(row["PSNR (CAP-RC++)"]).startswith("inf"):
+                            st.success("✅ Lossless verification passed — exact reconstruction.")
+
+                        img1, img2 = st.columns(2)
+                        with img1:
+                            st.image(item["original_bytes"], caption="Original",
+                                     use_container_width=True)
+                        with img2:
+                            st.image(item["rec_png_bytes"], caption="Reconstructed",
+                                     use_container_width=True)
+
+                        dl1, dl2 = st.columns(2)
+                        with dl1:
+                            st.download_button(
+                                "⬇️ Compressed BIN",
+                                data=item["bin_bytes"],
+                                file_name=item["bin_name"],
+                                mime="application/octet-stream",
+                                key=f"bin_{idx}"
+                            )
+                        with dl2:
+                            st.download_button(
+                                "⬇️ Reconstructed PNG",
+                                data=item["rec_png_bytes"],
+                                file_name=item["rec_png_name"],
+                                mime="image/png",
+                                key=f"png_{idx}"
+                            )
+
+                st.download_button(
+                    "⬇️ Download CSV Summary",
+                    data=results["csv_bytes"],
+                    file_name="CAPRCppp_Results.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+                st.download_button(
+                    "📦 Download ZIP (All Files)",
+                    data=results["zip_bytes"],
+                    file_name="CAPRCppp_all.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+
+st.markdown("---")
+st.caption(
+    "CAP-RC+++ • Context-Adaptive Lossless Image Compression • "
+    "Intermediate pixel values and compression matrices are intentionally hidden."
+)
